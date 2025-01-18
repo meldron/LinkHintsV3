@@ -6,7 +6,7 @@ type IconSizes = Record<string, string>;
 
 export default (): string =>
   toJSON({
-    manifest_version: 2,
+    manifest_version: 3,
     version: config.meta.version,
     name: config.meta.name,
     author: config.meta.author,
@@ -14,16 +14,19 @@ export default (): string =>
     homepage_url: config.meta.homepage,
     browser_specific_settings: getBrowserSpecificSettings(config.browser),
     icons: getIcons(config.icons, config.browser),
+    content_security_policy: {
+      extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+    },
     permissions: [
-      // Needed for injecting content scripts in already open tabs on install,
-      // and for checking if tabs are allowed to run content scripts at all (so
-      // that the toolbar button can update).
-      "<all_urls>",
-      // Needed to store options.
       "storage",
+      "scripting",
+      "tabs",
+      "activeTab"
     ],
-    browser_action: {
-      browser_style: true,
+    host_permissions: [
+      "<all_urls>"
+    ],
+    action: {
       default_popup: config.popupHtml,
       default_icon: getIcons(config.icons, config.browser),
     },
@@ -32,10 +35,8 @@ export default (): string =>
       open_in_tab: true,
     },
     background: {
-      scripts: [
-        config.needsPolyfill ? config.polyfill.output : undefined,
-        config.background.output,
-      ].filter((script) => script !== undefined),
+      service_worker: "service-worker.js",
+      type: "module"
     },
     content_scripts: [
       {
@@ -52,12 +53,6 @@ export default (): string =>
         matches: ["<all_urls>"],
         run_at: "document_start",
         js: [
-          // We need to put the polyfill both here and above, because Chrome
-          // does not seem to guarantee the content scripts to run in order.
-          // Each `js` array runs in order, but not the `content_scripts` array
-          // it seems. See: https://github.com/lydell/LinkHints/issues/51
-          // It’s a tiny bit wasteful to load the polyfill twice in the top
-          // frame, but it’s not so bad.
           config.needsPolyfill ? config.polyfill.output : undefined,
           config.renderer.output,
         ].filter((script) => script !== undefined),

@@ -37,13 +37,21 @@ export function log(level: LogLevel, ...args: Array<unknown>): void {
   }
 
   const method = getLogMethod(level);
+  
+  let context: string;
+  if (isServiceWorker()) {
+    context = "service-worker";
+  } else {
+    context = window.location.protocol.endsWith("-extension:")
+      ? "extension page"
+      : window.location.href;
+  }
+
   method.call(
     console,
     `[${META_SLUG}]`,
     formatDate(new Date()),
-    window.location.protocol.endsWith("-extension:")
-      ? "extension page"
-      : window.location.href,
+    context,
     "\n ",
     ...args
   );
@@ -191,7 +199,11 @@ export function partition<T>(
 
 export function makeRandomToken(): string {
   const array = new Uint32Array(3);
-  window.crypto.getRandomValues(array);
+  if (isServiceWorker()) {
+    self.crypto.getRandomValues(array);
+  }  else { 
+    window.crypto.getRandomValues(array); 
+  }
   return array.join("");
 }
 
@@ -614,4 +626,9 @@ export function fireAndForget(
   promise.catch((error) => {
     log("error", name, error, ...args);
   });
+}
+
+// Helper to check if we're in a service worker context
+export function isServiceWorker(): boolean {
+  return typeof window === 'undefined' && typeof self !== 'undefined' && typeof self.ServiceWorkerGlobalScope !== 'undefined';
 }

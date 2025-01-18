@@ -1,4 +1,5 @@
 import huffman from "n-ary-huffman";
+import browser, { Runtime, Tabs } from 'webextension-polyfill';
 
 import iconsChecksum from "../icons/checksum";
 import {
@@ -151,8 +152,8 @@ type HintInput =
 
 // As far as I can tell, the top frameId is always 0. This is also mentioned here:
 // https://developer.mozilla.org/en-US/Add-ons/WebExtensions/API/Tabs/executeScript
-// “frameId: Optional integer. The frame where the code should be injected.
-// Defaults to 0 (the top-level frame).”
+// "frameId: Optional integer. The frame where the code should be injected.
+// Defaults to 0 (the top-level frame)."
 const TOP_FRAME_ID = 0;
 
 export const t = {
@@ -161,7 +162,7 @@ export const t = {
   // alive after this timeout, ignore it.
   FRAME_REPORT_TIMEOUT: unsignedInt(100), // ms
 
-  // Only show the badge “spinner” if the hints are slow.
+  // Only show the badge "spinner" if the hints are slow.
   BADGE_COLLECTING_DELAY: unsignedInt(300), // ms
 
   // Roughly how often to update the hints in hints mode. While a lower number
@@ -205,17 +206,13 @@ export default class BackgroundProgram {
   }
 
   async start(): Promise<void> {
-    log("log", "BackgroundProgram#start", BROWSER, PROD);
+    log("log", "BackgroundProgram#start", "chrome", true);
 
     try {
       await this.updateOptions({ isInitial: true });
     } catch (errorAny) {
       const error = errorAny as Error;
       this.options.errors = [error.message];
-    }
-
-    if (!PROD) {
-      await this.restoreTabsPerf();
     }
 
     const tabs = await browser.tabs.query({});
@@ -245,7 +242,7 @@ export default class BackgroundProgram {
         browser.tabs.onUpdated,
         this.onTabUpdated.bind(this),
         "BackgroundProgram#onTabUpdated",
-        // Chrome doesn’t support filters.
+        // Chrome doesn't support filters.
         BROWSER === "firefox" ? { properties: ["status", "pinned"] } : undefined
       ),
       addListener(
@@ -265,8 +262,13 @@ export default class BackgroundProgram {
       }
     }
 
+    // Use browserAction API through browser.action for modern extensions
     fireAndForget(
-      browser.browserAction.setBadgeBackgroundColor({ color: COLOR_BADGE }),
+      (async () => {
+        await browser.action.setBadgeBackgroundColor({
+          color: "#323234",
+        });
+      })(),
       "BackgroundProgram#start->setBadgeBackgroundColor"
     );
 
@@ -361,7 +363,7 @@ export default class BackgroundProgram {
       : browser.tabs.sendMessage(tabId, message, { frameId }));
   }
 
-  // Warning: Don’t make this method async! If a new tab gets for example 3
+  // Warning: Don't make this method async! If a new tab gets for example 3
   // events in a short time just after being opened, those three events might
   // overwrite each other. Expected execution:
   //
@@ -385,81 +387,92 @@ export default class BackgroundProgram {
   // each other. An overwrite can cause us to lose `tabState.isOptionsPage`,
   // breaking shortcuts customization.
   onMessage(
-    message: ToBackground,
-    sender: browser.runtime.MessageSender
-  ): void {
-    // `info` can be missing when the message comes from for example the popup
-    // (which isn’t associated with a tab). The worker script can even load in
-    // an `about:blank` frame somewhere when hovering the browserAction!
-    const info = makeMessageInfo(sender);
+    message: unknown,
+    sender: Runtime.MessageSender,
+    sendResponse: (response?: unknown) => void
+  ): true {
+    // Type guard to ensure message is ToBackground
+    if (
+      typeof message === "object" &&
+      message !== null &&
+      "type" in message
+    ) {
+      const typedMessage = message as ToBackground;
+      // `info` can be missing when the message comes from for example the popup
+      const info = makeMessageInfo(sender);
 
-    const tabStateRaw =
-      info === undefined ? undefined : this.tabState.get(info.tabId);
-    const tabState =
-      tabStateRaw === undefined ? makeEmptyTabState(info?.tabId) : tabStateRaw;
+      const tabStateRaw =
+        info === undefined ? undefined : this.tabState.get(info.tabId);
+      const tabState =
+        tabStateRaw === undefined ? makeEmptyTabState(info?.tabId) : tabStateRaw;
 
-    if (info !== undefined && tabStateRaw === undefined) {
-      const { [info.tabId.toString()]: perf = [] } = this.restoredTabsPerf;
-      tabState.perf = perf;
-      this.tabState.set(info.tabId, tabState);
-    }
+      if (info !== undefined && tabStateRaw === undefined) {
+        const { [info.tabId.toString()]: perf = [] } = this.restoredTabsPerf;
+        tabState.perf = perf;
+        this.tabState.set(info.tabId, tabState);
+      }
 
-    switch (message.type) {
-      case "FromWorker":
-        if (info !== undefined) {
-          try {
-            this.onWorkerMessage(message.message, info, tabState);
-          } catch (error) {
-            log(
-              "error",
-              "BackgroundProgram#onWorkerMessage",
-              error,
-              message.message,
-              info
-            );
+      switch (typedMessage.type) {
+        case "FromWorker":
+          if (info !== undefined) {
+            try {
+              this.onWorkerMessage(typedMessage.message, info, tabState);
+            } catch (error) {
+              log(
+                "error",
+                "BackgroundProgram#onWorkerMessage",
+                error,
+                typedMessage.message,
+                info
+              );
+            }
           }
-        }
-        break;
+          break;
 
-      case "FromRenderer":
-        if (info !== undefined) {
-          try {
-            this.onRendererMessage(message.message, info, tabState);
-          } catch (error) {
-            log(
-              "error",
-              "BackgroundProgram#onRendererMessage",
-              error,
-              message.message,
-              info
-            );
+        case "FromRenderer":
+          if (info !== undefined) {
+            try {
+              this.onRendererMessage(typedMessage.message, info, tabState);
+            } catch (error) {
+              log(
+                "error",
+                "BackgroundProgram#onRendererMessage",
+                error,
+                typedMessage.message,
+                info
+              );
+            }
           }
-        }
-        break;
+          break;
 
-      case "FromPopup":
-        fireAndForget(
-          this.onPopupMessage(message.message),
-          "BackgroundProgram#onPopupMessage",
-          message.message,
-          info
-        );
-        break;
-
-      case "FromOptions":
-        if (info !== undefined) {
+        case "FromPopup":
           fireAndForget(
-            this.onOptionsMessage(message.message, info, tabState),
-            "BackgroundProgram#onOptionsMessage",
-            message.message,
+            this.onPopupMessage(typedMessage.message),
+            "BackgroundProgram#onPopupMessage",
+            typedMessage.message,
             info
           );
-        }
-        break;
+          break;
+
+        case "FromOptions":
+          if (info !== undefined) {
+            fireAndForget(
+              this.onOptionsMessage(typedMessage.message, info, tabState),
+              "BackgroundProgram#onOptionsMessage",
+              typedMessage.message,
+              info
+            );
+          }
+          break;
+      }
     }
+    
+    // Always call sendResponse and return true to indicate async response handling
+    sendResponse(undefined);
+    return true;
   }
 
-  onConnect(port: browser.runtime.Port): void {
+  onConnect(port: Runtime.Port): void {
     port.onDisconnect.addListener(({ sender }) => {
       const info = sender === undefined ? undefined : makeMessageInfo(sender);
       if (info !== undefined) {
@@ -651,7 +664,7 @@ export default class BackgroundProgram {
       case "ClickedLinkNavigatingToOtherPage": {
         const { hintsState } = tabState;
         if (hintsState.type !== "Idle") {
-          // Exit in “Delayed” mode so that the matched hints still show as
+          // Exit in "Delayed" mode so that the matched hints still show as
           // highlighted.
           this.exitHintsMode({ tabId: info.tabId, delayed: true });
         }
@@ -659,10 +672,10 @@ export default class BackgroundProgram {
       }
 
       // If the user clicks a link while hints mode is active, exit it.
-      // Otherwise you’ll end up in hints mode on the new page (it is still the
+      // Otherwise you'll end up in hints mode on the new page (it is still the
       // same tab, after all) but with no hints. If changing the address bar of
       // the tab to for example `about:preferences` it is too late to send
-      // message to the content scripts (“Error: Receiving end does not exist”).
+      // message to the content scripts ("Error: Receiving end does not exist").
       // Instead, syncing `WorkerProgram`s and unrendering is taken care of
       // if/when returning to the page via the back button. (See below.)
       case "TopPageHide": {
@@ -674,9 +687,9 @@ export default class BackgroundProgram {
       }
 
       // When clicking the back button In Firefox, the content scripts of the
-      // previous page aren’t re-run but instead pick up from where they were
+      // previous page aren't re-run but instead pick up from where they were
       // when leaving the page. If the user clicked a link while in hints mode
-      // and then pressed the back button, the `tabState` for the tab won’t be
+      // and then pressed the back button, the `tabState` for the tab won't be
       // in hints mode, but the content scripts of the page might be out of
       // sync. They never got any messages saying that hints mode was exited,
       // and now they pick up from where they were. So after returning to a page
@@ -987,7 +1000,7 @@ export default class BackgroundProgram {
 
         // Highlight the matched hints immediately, but hide others when the
         // highlight duration is over. Likely, the same hints will appear again
-        // when the “next” hints mode is started. This reduces flicker.
+        // when the "next" hints mode is started. This reduces flicker.
         this.sendRendererMessage(
           {
             type: "UpdateHints",
@@ -997,9 +1010,9 @@ export default class BackgroundProgram {
           { tabId }
         );
 
-        // In case the “next” hints mode takes longer than the highlight
+        // In case the "next" hints mode takes longer than the highlight
         // duration, remove the shruggie. It might flicker by otherwise, and we
-        // don’t need it, just like we don’t show it when entering hints mode
+        // don't need it, just like we don't show it when entering hints mode
         // initially.
         this.sendRendererMessage({ type: "RemoveShruggie" }, { tabId });
 
@@ -1200,7 +1213,7 @@ export default class BackgroundProgram {
     // real. I considered keeping track of where to open tabs manually for
     // Chrome, but the logic for where to open tabs turned out to be too
     // complicated to replicate in a good way, and there does not seem to be a
-    // downside of using the fake ctrl-click method in Chrome. In fact, there’s
+    // downside of using the fake ctrl-click method in Chrome. In fact, there's
     // even an upside to the ctrl-click method: The HTTP Referer header is sent,
     // just as if you had clicked the link for real. See: <bugzil.la/1615860>.
     if (t.PREFER_WINDOWS.value) {
@@ -1313,9 +1326,9 @@ export default class BackgroundProgram {
     const highlighted = extraHighlighted
       // Add indexes to the highlighted hints that get extra DOM nodes.
       .map((item, index) => updateIndex(item, numElements + index))
-      // Other highlighted hints don’t get extra DOM nodes – they instead
+      // Other highlighted hints don't get extra DOM nodes – they instead
       // highlight new hints with the same characters and position. Mark them
-      // with an index of -1 for `unhighlightHints`’s sakes.
+      // with an index of -1 for `unhighlightHints's sakes.
       .concat(alreadyHighlighted.map((item) => updateIndex(item, -1)));
 
     const elementRenders: Array<ElementRender> = elementsWithHints
@@ -1508,19 +1521,17 @@ export default class BackgroundProgram {
         );
         // Both uBlock Origin and Adblock Plus use `browser.tabs.insertCSS` with
         // `{ display: none !important; }` and `cssOrigin: "user"` to hide
-        // elements. I’ve seen LinkHint’s container to be hidden by a
+        // elements. I've seen LinkHint's container to be hidden by a
         // `[style*="animation:"]` filter. This makes sure that the container
         // cannot be hidden by adblockers.
         // In Chrome, 255 ids have the same specificity as >=256 (for Firefox,
-        // it’s 1023). One can increase the specificity even more by adding
-        // classes, but I don’t think it’s worth the trouble.
+        // it's 1023). One can increase the specificity even more by adding
+        // classes, but I don't think it's worth the trouble.
         fireAndForget(
-          browser.tabs.insertCSS(info.tabId, {
-            code: `${`#${CONTAINER_ID}`.repeat(
-              255
-            )} { display: block !important; }`,
-            cssOrigin: "user",
-            runAt: "document_start",
+          browser.scripting.insertCSS({
+            target: { tabId: info.tabId },
+            css: `${`#${CONTAINER_ID}`.repeat(255)} { display: block !important; }`,
+            origin: "USER"
           }),
           "BackgroundProgram#onRendererMessage",
           "Failed to insert adblock workaround CSS",
@@ -1887,7 +1898,7 @@ export default class BackgroundProgram {
           {
             type: "UpdateHints",
             updates: doneWaiting
-              // Highlighted elements with -1 as index don’t have their own DOM
+              // Highlighted elements with -1 as index don't have their own DOM
               // nodes – instead, they have highlighted a new hint with the same
               // characters and position. They are unhighlighted using
               // `this.refreshHintsRendering` below.
@@ -1946,7 +1957,7 @@ export default class BackgroundProgram {
     }
   }
 
-  onTabCreated(tab: browser.tabs.Tab): void {
+  onTabCreated(tab: Tabs.Tab): void {
     if (tab.id !== undefined) {
       fireAndForget(
         this.updateIcon(tab.id),
@@ -1962,7 +1973,7 @@ export default class BackgroundProgram {
 
   onTabUpdated(
     tabId: number,
-    changeInfo: browser.tabs._OnUpdatedChangeInfo
+    changeInfo: browser.Tabs.OnUpdatedChangeInfoType
   ): void {
     if (changeInfo.status !== undefined) {
       fireAndForget(
@@ -2010,28 +2021,23 @@ export default class BackgroundProgram {
   }
 
   async updateIcon(tabId: number): Promise<void> {
-    // In Chrome the below check fails for the extension options page, so check
-    // for the options page explicitly.
     const tabState = this.tabState.get(tabId);
     let enabled = tabState !== undefined ? tabState.isOptionsPage : false;
 
-    // Check if we’re allowed to execute content scripts on this page.
     if (!enabled) {
       try {
-        await browser.tabs.executeScript(tabId, {
-          code: "",
-          runAt: "document_start",
-        });
+        // Check if we can access the tab without executing code
+        await browser.tabs.get(tabId);
         enabled = true;
       } catch {
         enabled = false;
       }
     }
 
-    const type: IconType = enabled ? "normal" : "disabled";
-    const icons = getIcons(type);
-    log("log", "BackgroundProgram#updateIcon", tabId, type);
-    await browser.browserAction.setIcon({ path: icons, tabId });
+    const iconPaths = getIcons(enabled ? "normal" : "disabled");
+    
+    log("log", "BackgroundProgram#updateIcon", tabId, enabled ? "normal" : "disabled");
+    await browser.action.setIcon({ path: iconPaths, tabId });
   }
 
   updateBadge(tabId: number): void {
@@ -2043,10 +2049,12 @@ export default class BackgroundProgram {
     const { hintsState } = tabState;
 
     fireAndForget(
-      browser.browserAction.setBadgeText({
-        text: getBadgeText(hintsState),
-        tabId,
-      }),
+      (async () => {
+          await browser.action.setBadgeText({
+            text: getBadgeText(hintsState),
+            tabId,
+          });
+      })(),
       "BackgroundProgram#updateBadge->setBadgeText"
     );
   }
@@ -2059,14 +2067,15 @@ export default class BackgroundProgram {
         const defaultStorageSync = DEFAULT_STORAGE_SYNC;
         if (
           typeof defaultStorageSync === "object" &&
-          defaultStorageSync !== null
+          defaultStorageSync !== null &&
+          !Array.isArray(defaultStorageSync)
         ) {
           await browser.storage.sync.clear();
-          await browser.storage.sync.set(defaultStorageSync);
+          await browser.storage.sync.set(defaultStorageSync as Record<string, unknown>);
         }
       }
     }
-
+    
     const info = await browser.runtime.getPlatformInfo();
     const mac = info.os === "mac";
     const defaults = getDefaults({ mac });
@@ -2160,7 +2169,7 @@ export default class BackgroundProgram {
     const { hintsState } = tabState;
 
     if (refreshToken) {
-      this.oneTimeWindowMessageToken = makeRandomToken();
+      this.oneTimeWindowMessageToken = makeRandomTokenSW();
     }
 
     const common = {
@@ -2209,7 +2218,7 @@ export default class BackgroundProgram {
   }
 
   // Send a "StateSync" message to WorkerProgram. If a hint was auto-activated
-  // by text filtering, prevent “over-typing” (continued typing after the hint
+  // by text filtering, prevent "over-typing" (continued typing after the hint
   // got matched, before realizing it got matched) by temporarily removing all
   // keyboard shortcuts and suppressing all key presses for a short time.
   updateWorkerStateAfterHintActivation({
@@ -2322,13 +2331,18 @@ export default class BackgroundProgram {
   }
 }
 
+type VivaldiTab = browser.Tabs.Tab & {
+  vivExtData?: unknown;
+};
+
 // Copied from: https://stackoverflow.com/a/77047611
 async function getChromiumVariant(): Promise<ChromiumVariant> {
   const tabs = await browser.tabs.query({
     active: true,
     currentWindow: true,
   });
-  return tabs[0]?.vivExtData !== undefined ? "vivaldi" : "chrome";
+  const firstTab: VivaldiTab | undefined = tabs[0];
+  return (firstTab?.vivExtData !== undefined ? "vivaldi" : "chrome");
 }
 
 function makeEmptyTabState(tabId: number | undefined): TabState {
@@ -2428,51 +2442,56 @@ function getCombiningUrl(
 function shouldCombineHintsForClick(element: ElementWithHint): boolean {
   const { url, hasClickListener } = element;
   // The diff expander buttons on GitHub are links to the same fragment
-  // identifier. So are Bootstrap carousel next/previous “buttons”. So it’s not
+  // identifier. So are Bootstrap carousel next/previous "buttons". So it's not
   // safe to combine links with fragment identifiers at all. (They may be
-  // powered by delegated event listeners.) I guess they aren’t as common
-  // anyway. Also don’t combine if the elements themselves have click listeners.
+  // powered by delegated event listeners.) I guess they aren't as common
+  // anyway. Also don't combine if the elements themselves have click listeners.
   // Some sites use `<a>` as buttons with click listeners but still include an
   // href for some reason.
   return url !== undefined && !url.includes("#") && !hasClickListener;
 }
 
+type RunAt = 'document_end' | 'document_idle' | 'document_start';
+
+type InjectDetails = {
+  file?: string;
+  allFrames?: boolean;
+  matchAboutBlank?: boolean;
+  runAt?: RunAt;
+}
+
 async function runContentScripts(
-  tabs: Array<browser.tabs.Tab>
+  tabs: Array<Tabs.Tab>
 ): Promise<Array<Array<unknown>>> {
   const manifest = browser.runtime.getManifest();
+  type ContentScript = {
+    matches?: Array<string>;
+    js?: Array<string>;
+    all_frames?: boolean;
+    match_about_blank?: boolean;
+    run_at?: RunAt;
+  };
 
-  const detailsList =
-    manifest.content_scripts === undefined
-      ? []
-      : manifest.content_scripts
-          .filter((script) => script.matches.includes("<all_urls>"))
-          .flatMap((script) =>
-            script.js === undefined
-              ? []
-              : script.js.map((file) => ({
-                  file,
-                  allFrames: script.all_frames,
-                  matchAboutBlank: script.match_about_blank,
-                  runAt: script.run_at,
-                }))
-          );
+  const detailsList = (manifest.content_scripts as Array<ContentScript> | undefined)
+    ?.filter((script) => script.matches?.includes("<all_urls>"))
+    .flatMap((script) =>
+      script.js?.map((file) => ({
+        file,
+        allFrames: script.all_frames,
+        matchAboutBlank: script.match_about_blank,
+        runAt: script.run_at ,
+      })) ?? []
+    ) ?? [];
 
   return Promise.all(
     tabs.flatMap((tab) =>
-      detailsList.map(async (details) => {
+      detailsList.map(async (details: InjectDetails) => {
         if (tab.id === undefined) {
           return [];
         }
         try {
-          return (await browser.tabs.executeScript(
-            tab.id,
-            details
-          )) as Array<unknown>;
+          return await browser.tabs.executeScript(tab.id, details);
         } catch {
-          // If `executeScript` fails it means that the extension is not
-          // allowed to run content scripts in the tab. Example: most
-          // `chrome://*` pages. We don’t need to do anything in that case.
           return [];
         }
       })
@@ -2480,21 +2499,21 @@ async function runContentScripts(
   );
 }
 
-function firefoxWorkaround(tabs: Array<browser.tabs.Tab>): void {
+function firefoxWorkaround(tabs: Array<browser.Tabs.Tab>): void {
   for (const tab of tabs) {
     if (tab.id !== undefined) {
       const message: FromBackground = { type: "FirefoxWorkaround" };
       browser.tabs.sendMessage(tab.id, message).catch(() => {
-        // If `sendMessage` fails it means that there’s no content script
+        // If `sendMessage` fails it means that there's no content script
         // listening in that tab. Example:  `about:` pages (where extensions
-        // are not allowed to run content scripts). We don’t need to do
+        // are not allowed to run content scripts). We don't need to do
         // anything in that case.
       });
     }
   }
 }
 
-async function getCurrentTab(): Promise<browser.tabs.Tab> {
+async function getCurrentTab(): Promise<Tabs.Tab> {
   const tabs = await browser.tabs.query({
     active: true,
     windowId: browser.windows.WINDOW_ID_CURRENT,
@@ -2542,8 +2561,9 @@ type IconType = "disabled" | "normal";
 
 function getIcons(type: IconType): Record<string, string> {
   const manifest = browser.runtime.getManifest();
+
   return Object.fromEntries(
-    Object.entries(manifest.browser_action?.default_icon ?? {}).flatMap(
+    Object.entries(manifest.icons ?? {}).flatMap(
       ([key, value]) => {
         if (typeof value === "string") {
           const newValue = value.replace(/(\$)\w+/, `$1${type}`);
@@ -2575,10 +2595,10 @@ function getBadgeText(hintsState: HintsState): string {
       return "";
 
     case "Collecting":
-      // Only show the badge “spinner” if the hints are slow. But show it
+      // Only show the badge "spinner" if the hints are slow. But show it
       // immediately when refreshing so that one can see it flash in case you
       // get exactly the same hints after refreshing, so that you understand
-      // that something happened. It’s also nice to show in "ManyClick" mode.
+      // that something happened. It's also nice to show in "ManyClick" mode.
       return Date.now() - hintsState.startTime >
         t.BADGE_COLLECTING_DELAY.value || hintsState.refreshing
         ? "…"
@@ -2673,7 +2693,7 @@ function assignHints(
         comparePositions(a.hintMeasurements, b.hintMeasurements) ||
         // `hintsState.elementsWithHints` changes order as
         // `hintsState.enteredText` come and go. Sort on `.index` if all other
-        // things are equal, so that elements don’t unexpectedly swap hints after
+        // things are equal, so that elements don't unexpectedly swap hints after
         // erasing some text chars.
         a.index - b.index
     );
@@ -2699,7 +2719,7 @@ function assignHints(
 }
 
 function makeMessageInfo(
-  sender: browser.runtime.MessageSender
+  sender: browser.Runtime.MessageSender
 ): MessageInfo | undefined {
   return sender.tab?.id !== undefined && sender.frameId !== undefined
     ? { tabId: sender.tab.id, frameId: sender.frameId, url: sender.url }
@@ -2829,7 +2849,7 @@ function updateHints({
             hidden: element.hidden,
           }
         : {
-            // Hide hints that don’t match the entered hint chars.
+            // Hide hints that don't match the entered hint chars.
             type: "Hide",
             index: element.index,
             hidden: true,
@@ -2909,4 +2929,11 @@ function mergeElements(
 function matchesText(passedText: string, words: Array<string>): boolean {
   const text = passedText.toLowerCase();
   return words.every((word) => text.includes(word));
+}
+
+// Service worker version of makeRandomToken using self instead of window
+function makeRandomTokenSW(): string {
+  const array = new Uint32Array(3);
+  self.crypto.getRandomValues(array);
+  return array.join("");
 }

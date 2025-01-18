@@ -6,6 +6,7 @@ import {
   DecoderError,
   string,
 } from "tiny-decoders";
+import browser from 'webextension-polyfill';
 
 import { ElementType } from "./hints";
 import {

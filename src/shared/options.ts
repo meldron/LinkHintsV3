@@ -35,6 +35,8 @@ export type OptionsData = {
   mac: boolean;
 };
 
+import browser from 'webextension-polyfill';
+
 export type Options = ReturnType<typeof Options>;
 
 export type PartialOptions = Partial<Options>;

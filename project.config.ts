@@ -71,8 +71,8 @@ export default {
     output: "browser-polyfill.js",
   },
   background: {
-    input: "background/main.ts",
-    output: "background.js",
+    input: "background/service-worker.ts",
+    output: "service-worker.js",
   },
   worker: {
     input: "worker/main.ts",
