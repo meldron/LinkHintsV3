@@ -1,15 +1,7 @@
-# Link Hints
+# Link Hints Manifest V3 Version
 
 <img src="icon.svg" alt="" align="left" style="margin-right: 1em;">
 
-A browser extension that lets you click with your keyboard.
+This is a fork of the [Link Hints](https://github.com/lydell/LinkHints) extension by [Simon Lydell](https://github.com/lydell) so it works on Chromium based browsers which require [Manifest V3](https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3).
 
-**[Website] | [Changelog] | [Contributing]**
-
-**[Add to Firefox] | [Add to Chrome]**
-
-[add to chrome]: https://chrome.google.com/webstore/detail/link-hints/kjjgifdfplpegljdfnpmbjmkngdilmkd
-[add to firefox]: https://addons.mozilla.org/firefox/addon/LinkHints/
-[changelog]: https://github.com/lydell/LinkHints/issues/1
-[contributing]: CONTRIBUTING.md
-[website]: https://lydell.github.io/LinkHints
+This version in it's current form is not yet compatible with Firefox.
